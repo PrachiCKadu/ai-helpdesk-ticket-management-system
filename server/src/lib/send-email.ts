@@ -2,14 +2,19 @@
 import type { PgBoss } from "pg-boss";
 import Sentry from "./sentry";
 import nodemailer from "nodemailer";
+import type SMTPTransport from "nodemailer/lib/smtp-transport";
 
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true,
   auth: {
     user: process.env.GMAIL_EMAIL!,
     pass: process.env.GMAIL_APP_PASSWORD!,
   },
-});
+  family: 4, // force IPv4 — Railway containers don't support outbound IPv6
+} as SMTPTransport.Options);
+
 const QUEUE_NAME = "send-email";
 
 interface SendEmailJobData {
