@@ -48,8 +48,9 @@ export async function registerSendEmailWorker(boss: PgBoss): Promise<void> {
   html: bodyHtml,
 });
 
-      console.log(`Email sent to ${to} — subject: "${subject}"`);
+   console.log(`Email sent to ${to} — subject: "${subject}"`);
     } catch (error) {
+      console.error(`❌ Failed to send email to ${to}:`, error);   // 👈 ADD THIS LINE
       Sentry.captureException(error, {
         tags: { queue: QUEUE_NAME },
       });

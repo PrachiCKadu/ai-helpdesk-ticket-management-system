@@ -25,6 +25,7 @@ if (!process.env.BETTER_AUTH_SECRET) {
 
 
 const app = express();
+app.set("trust proxy", 1);
 const port = process.env.PORT || 3001;
 app.get("/debug-sentry", function mainHandler(req, res) {
   throw new Error("My first Sentry error!");
