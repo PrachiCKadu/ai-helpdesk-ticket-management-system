@@ -27,6 +27,8 @@ export async function registerSendEmailWorker(boss: PgBoss): Promise<void> {
   });
 
   await boss.work<SendEmailJobData>(QUEUE_NAME, async (jobs) => {
+     console.log("📥 send-email job received:", jobs[0]?.data);   // 👈 ADD THIS
+
     const { to, subject, body, bodyHtml } = jobs[0]!.data;
 
     try {
