@@ -1,4 +1,4 @@
-import sgMail from "@sendgrid/mail";
+// import sgMail from "@sendgrid/mail";
 import type { PgBoss } from "pg-boss";
 import Sentry from "./sentry";
 import nodemailer from "nodemailer";
@@ -30,7 +30,7 @@ export async function registerSendEmailWorker(boss: PgBoss): Promise<void> {
     const { to, subject, body, bodyHtml } = jobs[0]!.data;
 
     try {
-      sgMail.setApiKey(process.env.GMAIL_APP_PASSWORD!);
+      // sgMail.setApiKey(process.env.GMAIL_APP_PASSWORD!);
 
       // await sgMail.send({
       //   to,
