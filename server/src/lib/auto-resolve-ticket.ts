@@ -1,0 +1,225 @@
+import fs from "fs";
+import path from "path";
+import type { PgBoss } from "pg-boss";
+import { generateText } from "ai";
+// import { openai } from "@ai-sdk/openai";
+import { google } from "@ai-sdk/google";
+import Sentry from "./sentry";
+import prisma from "../db";
+import { sendEmailJob } from "./send-email";
+import { AI_AGENT_ID } from "core/constants/ai-agent";
+const QUEUE_NAME = "auto-resolve-ticket";
+
+const knowledgeBase = fs.readFileSync(
+  path.join(import.meta.dirname, "../../knowledge-base.md"),
+  "utf-8"
+);
+
+interface AutoResolveJobData {
+  ticketId: number;
+  subject: string;
+  body: string;
+  senderName: string;
+  senderEmail: string;
+}
+// console.log("Gemini API Key:", process.env.GOOGLE_GENERATIVE_AI_API_KEY);
+
+export async function registerAutoResolveWorker(boss: PgBoss): Promise<void> {
+  await boss.createQueue(QUEUE_NAME, {
+    retryLimit: 3,
+    retryDelay: 30,
+    retryBackoff: true,
+  });
+
+  await boss.work<AutoResolveJobData>(QUEUE_NAME, async (jobs) => {
+    const { ticketId, subject, body, senderName, senderEmail } = jobs[0]!.data;
+    const firstName = senderName.split(" ")[0];
+
+    await prisma.ticket.update({
+      where: { id: ticketId },
+      data: { status: "processing" },
+    });
+
+    let response: string;
+    try {
+      const { text } = await generateText({
+        model: google("gemini-2.5-flash"),
+        system:
+          "You are a friendly and professional support agent for Helpdesk. " +
+          "Use ONLY the following knowledge base to answer the customer's question.\n\n" +
+          knowledgeBase +
+          "\n\n" +
+          "Guidelines for your response:\n" +
+          `- Address the customer by their first name: ${firstName}\n` +
+          "- Use a warm, professional, and customer-friendly tone\n" +
+          "- Format the response clearly with line breaks between paragraphs\n" +
+          "- Use bullet points or numbered lists when listing steps or multiple items\n" +
+          "- End with an offer to help further, e.g. 'If you have any other questions, feel free to reach out.'\n" +
+          "- Sign off with:\n\nBest regards,\nHelpdesk Support\n\n" +
+          "If the knowledge base does NOT contain enough information to fully resolve the question, " +
+          'respond with exactly "ESCALATE" and nothing else.',
+        prompt: `Subject: ${subject}\n\nBody: ${body}`,
+      });
+      response = text.trim();
+    // } 
+    // catch (error) {
+    //   Sentry.captureException(error, {
+    //     tags: { queue: QUEUE_NAME, ticketId },
+    //   });
+    //   console.error(`Auto-resolve AI call failed for ticket ${ticketId}:`, error);
+    //   await prisma.ticket.update({
+    //     where: { id: ticketId },
+    //     data: { status: "open", assignedToId: null },
+    //   });
+    //   return;
+    // }
+
+    } catch (error) {
+  Sentry.captureException(error, {
+    tags: { queue: QUEUE_NAME, ticketId },
+  });
+
+  console.error(`Auto-resolve AI call failed for ticket ${ticketId}:`, error);
+
+  // Production fallback reply
+  response = `Hi ${firstName},
+
+Thank you for contacting Helpdesk.
+
+We have received your request and successfully created a support ticket.
+
+Our support team will review your issue and get back to you as soon as possible.
+
+If you have any additional information that may help us investigate, simply reply to this email.
+
+Best regards,
+Prachi kadu`;
+}
+
+    // if (response === "ESCALATE") {
+    //   await prisma.ticket.update({
+    //     where: { id: ticketId },
+    //     data: { status: "open", assignedToId: null },
+    //   });
+    // } 
+
+    if (response === "ESCALATE") {
+  response = `Hi ${firstName},
+
+Thank you for contacting Helpdesk.
+
+Your request requires assistance from one of our support specialists.
+
+Your ticket has been assigned for manual review, and someone from our team will get back to you shortly.
+
+Thank you for your patience.
+
+Best regards,
+Prachi Kadu`;
+
+  await prisma.ticket.update({
+    where: { id: ticketId },
+    data: {
+      status: "open",
+      assignedToId: null,
+    },
+  });
+}
+
+
+    // else {
+    //   try {
+    //     await prisma.$transaction([
+    //       prisma.reply.create({
+    //         data: {
+    //           body: response,
+    //           senderType: "agent",
+    //           ticketId,
+    //           userId: null,
+    //         },
+    //       }),
+    //       prisma.ticket.update({
+    //         where: { id: ticketId },
+    //         data: { status: "resolved" },
+    //       }),
+    //     ]);
+
+    //     await sendEmailJob({
+    //       to: senderEmail,
+    //       subject: `Re: ${subject}`,
+    //       body: response,
+    //     });
+    //   } catch (error) {
+    //     Sentry.captureException(error, {
+    //       tags: { queue: QUEUE_NAME, ticketId },
+    //     });
+    //     throw error;
+    //   }
+    // }
+
+
+    try {
+  await prisma.$transaction([
+    prisma.reply.create({
+      data: {
+        body: response,
+        senderType: "agent",
+        ticketId,
+        userId: null,
+      },
+    }),
+    // prisma.ticket.update({
+    //   where: { id: ticketId },
+    //   data: {
+    //     status: response.includes("manual review")
+    //       ? "open"
+    //       : "resolved",
+    //   },
+    // }),
+
+    prisma.ticket.update({
+  where: { id: ticketId },
+  data: {
+    status: response.includes("manual review")
+      ? "open"
+      : "resolved",
+    assignedToId: response.includes("manual review")
+      ? null
+      : AI_AGENT_ID,
+  },
+}),
+
+  ]);
+
+  await sendEmailJob({
+    to: senderEmail,
+    subject: `Re: ${subject}`,
+    body: response,
+  });
+
+  console.log("📧 Auto reply sent.");
+} catch (error) {
+  Sentry.captureException(error, {
+    tags: { queue: QUEUE_NAME, ticketId },
+  });
+  throw error;
+}
+  });
+}
+
+export async function sendAutoResolveJob(ticket: {
+  id: number;
+  subject: string;
+  body: string;
+  senderName: string;
+  senderEmail: string;
+}): Promise<void> {
+  const { boss } = await import("./queue");
+  await boss.send(QUEUE_NAME, {
+    ticketId: ticket.id,
+    subject: ticket.subject,
+    body: ticket.body,
+    senderName: ticket.senderName,
+    senderEmail: ticket.senderEmail,
+  });
+}

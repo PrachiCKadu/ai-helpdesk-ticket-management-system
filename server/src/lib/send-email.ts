@@ -1,0 +1,64 @@
+import sgMail from "@sendgrid/mail";
+import type { PgBoss } from "pg-boss";
+import Sentry from "./sentry";
+import nodemailer from "nodemailer";
+
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.GMAIL_EMAIL!,
+    pass: process.env.GMAIL_APP_PASSWORD!,
+  },
+});
+const QUEUE_NAME = "send-email";
+
+interface SendEmailJobData {
+  to: string;
+  subject: string;
+  body: string;
+  bodyHtml?: string;
+}
+
+export async function registerSendEmailWorker(boss: PgBoss): Promise<void> {
+  await boss.createQueue(QUEUE_NAME, {
+    retryLimit: 3,
+    retryDelay: 30,
+    retryBackoff: true,
+  });
+
+  await boss.work<SendEmailJobData>(QUEUE_NAME, async (jobs) => {
+    const { to, subject, body, bodyHtml } = jobs[0]!.data;
+
+    try {
+      sgMail.setApiKey(process.env.GMAIL_APP_PASSWORD!);
+
+      // await sgMail.send({
+      //   to,
+      //   from: process.env.GMAIL_EMAIL!,
+      //   subject,
+      //   text: body,
+      //   ...(bodyHtml && { html: bodyHtml }),
+      // });
+
+      await transporter.sendMail({
+  from: process.env.GMAIL_EMAIL!,
+  to,
+  subject,
+  text: body,
+  html: bodyHtml,
+});
+
+      console.log(`Email sent to ${to} — subject: "${subject}"`);
+    } catch (error) {
+      Sentry.captureException(error, {
+        tags: { queue: QUEUE_NAME },
+      });
+      throw error;
+    }
+  });
+}
+
+export async function sendEmailJob(data: SendEmailJobData): Promise<void> {
+  const { boss } = await import("./queue");
+  await boss.send(QUEUE_NAME, data);
+}
